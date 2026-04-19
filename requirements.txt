@@ -1,6 +1,7 @@
 # ランタイム依存（Lambdaにデプロイするもの）
 requests==2.32.3
 boto3==1.34.144
+PyJWT[crypto]==2.10.1
 
 # 開発・テスト依存（ローカル開発のみ）
 # pip install -r requirements-dev.txt で別途インストール

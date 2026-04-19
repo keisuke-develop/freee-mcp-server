@@ -1,6 +1,7 @@
 # 秘密情報（絶対にコミットしない）
 .env
 .env.*
+.mcp.json
 secrets.json
 *.pem
 
@@ -25,6 +26,12 @@ htmlcov/
 # AWS SAM ビルド成果物
 .aws-sam/
 packaged.yaml
+infra/packaged.yaml
+infra/template.deploy.yaml
+
+# Lambda デプロイパッケージ（ビルド成果物）
+.build/
+.bootstrap-venv/
 
 # IDE
 .vscode/

@@ -2,21 +2,20 @@
 結合テスト: freee/client.py
 
 FreeeClientがfreee APIを正しく呼び出すかをテストする。
-HTTPリクエストはrequests_mockでモックする。
+HTTPリクエストは内部HTTPヘルパーをモックする。
 Secrets ManagerとFreeeAuthはpatchで差し替える。
 """
 
 import sys
 import os
-from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
 import pytest
-import requests
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../app"))
 
 from freee.client import FreeeClient
+from utils.http import HttpTimeoutError
 
 
 def _make_auth_mock(access_token: str = "test-token", company_id: int = 12345):
@@ -44,7 +43,7 @@ class TestGetAccountItems:
         mock_response.json.return_value = mock_response_data
 
         with patch("freee.client.FreeeAuth", return_value=mock_auth), \
-             patch("requests.get", return_value=mock_response):
+             patch("freee.client.http_get", return_value=mock_response):
             client = FreeeClient()
             items = client.get_account_items()
 
@@ -58,13 +57,13 @@ class TestGetAccountItems:
         mock_response.json.return_value = {"account_items": []}
 
         with patch("freee.client.FreeeAuth", return_value=mock_auth), \
-             patch("requests.get", return_value=mock_response) as mock_get:
+             patch("freee.client.http_get", return_value=mock_response) as mock_get:
             client = FreeeClient()
             client.get_account_items(account_type="expense")
 
         # typeパラメータがクエリに含まれているか確認
         call_kwargs = mock_get.call_args
-        params = call_kwargs.kwargs.get("params") or call_kwargs.args[1] if len(call_kwargs.args) > 1 else {}
+        params = call_kwargs.kwargs.get("params") or {}
         assert params.get("type") == "expense" or "expense" in str(call_kwargs)
 
     def test_異常系_APIエラー時にRuntimeError(self):
@@ -73,7 +72,7 @@ class TestGetAccountItems:
         mock_response.status_code = 500
 
         with patch("freee.client.FreeeAuth", return_value=mock_auth), \
-             patch("requests.get", return_value=mock_response):
+             patch("freee.client.http_get", return_value=mock_response):
             client = FreeeClient()
             with pytest.raises(RuntimeError):
                 client.get_account_items()
@@ -97,7 +96,7 @@ class TestGetTaxes:
         mock_response.json.return_value = mock_response_data
 
         with patch("freee.client.FreeeAuth", return_value=mock_auth), \
-             patch("requests.get", return_value=mock_response):
+             patch("freee.client.http_get", return_value=mock_response):
             client = FreeeClient()
             taxes = client.get_taxes()
 
@@ -124,7 +123,7 @@ class TestCreateDeal:
         mock_response.json.return_value = mock_response_data
 
         with patch("freee.client.FreeeAuth", return_value=mock_auth), \
-             patch("requests.post", return_value=mock_response) as mock_post:
+             patch("freee.client.http_post", return_value=mock_response) as mock_post:
             client = FreeeClient()
             result = client.create_deal(
                 issue_date="2026-04-19",
@@ -138,7 +137,7 @@ class TestCreateDeal:
 
         # POSTリクエストのボディを確認
         call_kwargs = mock_post.call_args
-        payload = call_kwargs.kwargs.get("json") or {}
+        payload = call_kwargs.kwargs.get("json_body") or {}
         assert payload.get("type") == "expense"
         # 金額は details[0].amount に入る（due_amountはトップレベルには不要）
         assert payload["details"][0]["amount"] == 1500
@@ -152,7 +151,7 @@ class TestCreateDeal:
         }
 
         with patch("freee.client.FreeeAuth", return_value=mock_auth), \
-             patch("requests.post", return_value=mock_response):
+             patch("freee.client.http_post", return_value=mock_response):
             client = FreeeClient()
             with pytest.raises(ValueError, match="バリデーションエラー"):
                 client.create_deal(
@@ -166,7 +165,7 @@ class TestCreateDeal:
         mock_auth = _make_auth_mock()
 
         with patch("freee.client.FreeeAuth", return_value=mock_auth), \
-             patch("requests.post", side_effect=requests.exceptions.Timeout):
+             patch("freee.client.http_post", side_effect=HttpTimeoutError):
             client = FreeeClient()
             with pytest.raises(RuntimeError, match="タイムアウト"):
                 client.create_deal(

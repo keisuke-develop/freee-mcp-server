@@ -10,9 +10,8 @@ access_tokenの有効期限を確認し、必要に応じてrefresh_tokenで更�
 import logging
 from datetime import datetime, timedelta, timezone
 
-import requests
-
 from utils.secrets import load_secret, update_secret
+from utils.http import http_post, HttpRequestError, HttpTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +141,7 @@ class FreeeAuth:
             )
 
         try:
-            response = requests.post(
+            response = http_post(
                 _TOKEN_URL,
                 data={
                     "grant_type": "refresh_token",
@@ -152,13 +151,13 @@ class FreeeAuth:
                 },
                 timeout=10,
             )
-            response.raise_for_status()
-        except requests.exceptions.Timeout:
+        except HttpTimeoutError:
             raise RuntimeError("freee OAuthトークンのrefreshがタイムアウトしました。")
-        except requests.exceptions.HTTPError as e:
-            raise RuntimeError(f"freee OAuthトークンのrefreshに失敗しました: {e.response.status_code}")
-        except requests.exceptions.RequestException as e:
+        except HttpRequestError as e:
             raise RuntimeError(f"freee OAuthへの接続エラー: {type(e).__name__}")
+
+        if response.status_code != 200:
+            raise RuntimeError(f"freee OAuthトークンのrefreshに失敗しました: {response.status_code}")
 
         token_data = response.json()
         new_access_token = token_data.get("access_token")

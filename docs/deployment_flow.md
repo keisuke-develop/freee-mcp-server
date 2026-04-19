@@ -30,7 +30,7 @@
 | AWSアカウント | aws.amazon.com |
 | AWS CLI v2 | `aws --version` |
 | AWS SAM CLI | `sam --version` |
-| Python 3.12 | `python3 --version` |
+| Python 3.13 | `python3 --version` |
 | Git | `git --version` |
 
 ### 1-2. AWS CLIの設定確認

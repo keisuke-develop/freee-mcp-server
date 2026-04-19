@@ -1,15 +1,12 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
-Description: freee Remote MCP Server - API Gateway + Lambda
+Description: freee Remote MCP Server - HTTP API + Lambda + Cognito OAuth
 
-# ============================================================
-# パラメータ
-# ============================================================
 Parameters:
   StageName:
     Type: String
     Default: prod
-    Description: API Gatewayのステージ名
+    Description: デプロイ識別子
 
   SecretName:
     Type: String
@@ -22,13 +19,10 @@ Parameters:
     AllowedValues: [DEBUG, INFO, WARNING, ERROR]
     Description: Lambdaのログレベル
 
-# ============================================================
-# グローバル設定
-# ============================================================
 Globals:
   Function:
-    Runtime: python3.12
-    Timeout: 28          # API Gatewayの29秒制限より1秒短く設定
+    Runtime: python3.13
+    Timeout: 28
     MemorySize: 256
     Environment:
       Variables:
@@ -36,17 +30,79 @@ Globals:
         LOG_LEVEL: !Ref LogLevel
         FREEE_API_BASE_URL: "https://api.freee.co.jp"
         POWERTOOLS_SERVICE_NAME: freee-mcp-server
-    # 本番環境では以下を有効化
-    # Tracing: Active
+        OAUTH_TABLE_NAME: !Ref FreeeeOauthStateTable
+        COGNITO_USER_POOL_ID: !Ref FreeeeUserPool
+        COGNITO_APP_CLIENT_NAME: !Sub "freee-mcp-oauth-${StageName}"
+        COGNITO_DOMAIN_URL: !Sub "https://${FreeeeUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
+        COGNITO_ISSUER_URL: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${FreeeeUserPool}"
 
-# ============================================================
-# リソース定義
-# ============================================================
 Resources:
+  FreeeeOauthStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "freee-mcp-oauth-${StageName}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
 
-  # ----------------------------------------------------------
-  # Lambda 実行ロール
-  # ----------------------------------------------------------
+  FreeeeUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "freee-mcp-users-${StageName}"
+      UsernameConfiguration:
+        CaseSensitive: false
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      Schema:
+        - Name: email
+          Required: false
+          Mutable: true
+
+  FreeeeOauthAppClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref FreeeeUserPool
+      ClientName: !Sub "freee-mcp-oauth-${StageName}"
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      SupportedIdentityProviders:
+        - COGNITO
+      CallbackURLs:
+        - !Sub "https://${FreeeeMcpHttpApi}.execute-api.${AWS::Region}.amazonaws.com/oauth/callback"
+      LogoutURLs:
+        - !Sub "https://${FreeeeMcpHttpApi}.execute-api.${AWS::Region}.amazonaws.com/health"
+      PreventUserExistenceErrors: ENABLED
+      ExplicitAuthFlows:
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+
+  FreeeeUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub "freeemcp-${AWS::AccountId}-${StageName}"
+      UserPoolId: !Ref FreeeeUserPool
+
   FreeeeMcpLambdaRole:
     Type: AWS::IAM::Role
     Properties:
@@ -59,18 +115,29 @@ Resources:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: FreeeSecretAccess
+        - PolicyName: FreeeSecretAndOAuthAccess
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Secrets Manager: freee認証情報の読み書きのみ許可
               - Sid: ReadWriteFreeeSecret
                 Effect: Allow
                 Action:
                   - secretsmanager:GetSecretValue
                   - secretsmanager:PutSecretValue
                 Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretName}-*"
-              # CloudWatch Logs: このLambdaのロググループのみ許可
+              - Sid: ReadWriteOauthState
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt FreeeeOauthStateTable.Arn
+              - Sid: DiscoverCognitoClient
+                Effect: Allow
+                Action:
+                  - cognito-idp:ListUserPoolClients
+                  - cognito-idp:DescribeUserPoolClient
+                Resource: "*"
               - Sid: CloudWatchLogs
                 Effect: Allow
                 Action:
@@ -79,9 +146,24 @@ Resources:
                   - logs:PutLogEvents
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/freee-mcp-server-*:*"
 
-  # ----------------------------------------------------------
-  # Lambda Function
-  # ----------------------------------------------------------
+  FreeeeMcpHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Name: !Sub "freee-mcp-api-${StageName}"
+      Description: freee Remote MCP Server API
+      StageName: "$default"
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowHeaders:
+          - authorization
+          - content-type
+          - mcp-protocol-version
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+
   FreeeeMcpFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -91,83 +173,92 @@ Resources:
       Role: !GetAtt FreeeeMcpLambdaRole.Arn
       Description: freee Remote MCP Server
       Events:
-        # MCP エンドポイント（全JSON-RPCリクエストを受け付け）
-        McpEndpoint:
-          Type: Api
-          Properties:
-            RestApiId: !Ref FreeeeMcpApi
-            Path: /mcp
-            Method: POST
-        # ヘルスチェック（オプション）
         HealthCheck:
-          Type: Api
+          Type: HttpApi
           Properties:
-            RestApiId: !Ref FreeeeMcpApi
+            ApiId: !Ref FreeeeMcpHttpApi
             Path: /health
             Method: GET
+        ProtectedResourceMetadata:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FreeeeMcpHttpApi
+            Path: /.well-known/oauth-protected-resource
+            Method: GET
+        AuthorizationServerMetadata:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FreeeeMcpHttpApi
+            Path: /.well-known/oauth-authorization-server
+            Method: GET
+        RegisterClient:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FreeeeMcpHttpApi
+            Path: /register
+            Method: POST
+        Authorize:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FreeeeMcpHttpApi
+            Path: /authorize
+            Method: GET
+        OAuthCallback:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FreeeeMcpHttpApi
+            Path: /oauth/callback
+            Method: GET
+        TokenExchange:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FreeeeMcpHttpApi
+            Path: /token
+            Method: POST
+        McpEndpoint:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref FreeeeMcpHttpApi
+            Path: /mcp
+            Method: POST
 
-  # ----------------------------------------------------------
-  # API Gateway
-  # ----------------------------------------------------------
-  FreeeeMcpApi:
-    Type: AWS::Serverless::Api
-    Properties:
-      Name: !Sub "freee-mcp-api-${StageName}"
-      StageName: !Ref StageName
-      Description: freee Remote MCP Server API
-      # APIキー認証を有効化
-      Auth:
-        ApiKeyRequired: true
-        UsagePlan:
-          CreateUsagePlan: PER_API
-          Description: freee MCP Server usage plan
-          Throttle:
-            BurstLimit: 100   # 個人利用のため低めに設定
-            RateLimit: 50
-          Quota:
-            Limit: 10000      # 月10,000リクエスト上限（個人利用想定）
-            Period: MONTH
-      # アクセスログ設定
-      AccessLogSetting:
-        DestinationArn: !GetAtt FreeeeMcpApiLogGroup.Arn
-        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","responseLength":"$context.responseLength"}'
-      MethodSettings:
-        - ResourcePath: "/*"
-          HttpMethod: "*"
-          # 詳細ログは無効（コスト削減）
-          LoggingLevel: ERROR
-          # メトリクスは有効
-          MetricsEnabled: true
-
-  # ----------------------------------------------------------
-  # CloudWatch Log Groups
-  # ----------------------------------------------------------
   FreeeeMcpFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/freee-mcp-server-${StageName}"
-      RetentionInDays: 30   # 個人利用のため30日で十分
-
-  FreeeeMcpApiLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/apigateway/freee-mcp-api-${StageName}"
       RetentionInDays: 30
 
-# ============================================================
-# 出力
-# ============================================================
 Outputs:
   ApiEndpoint:
     Description: Remote MCP Server のエンドポイントURL
-    Value: !Sub "https://${FreeeeMcpApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/mcp"
+    Value: !Sub "https://${FreeeeMcpHttpApi}.execute-api.${AWS::Region}.amazonaws.com/mcp"
     Export:
       Name: !Sub "${AWS::StackName}-ApiEndpoint"
+
+  ApiBaseUrl:
+    Description: Remote MCP Server のベースURL
+    Value: !Sub "https://${FreeeeMcpHttpApi}.execute-api.${AWS::Region}.amazonaws.com"
 
   FunctionArn:
     Description: Lambda FunctionのARN
     Value: !GetAtt FreeeeMcpFunction.Arn
 
-  ApiId:
-    Description: API Gateway の ID
-    Value: !Ref FreeeeMcpApi
+  HttpApiId:
+    Description: HTTP API Gateway の ID
+    Value: !Ref FreeeeMcpHttpApi
+
+  CognitoIssuerUrl:
+    Description: Cognito issuer URL
+    Value: !Sub "https://cognito-idp.${AWS::Region}.amazonaws.com/${FreeeeUserPool}"
+
+  CognitoUserPoolId:
+    Description: Cognito user pool ID
+    Value: !Ref FreeeeUserPool
+
+  CognitoHostedUiUrl:
+    Description: Cognito Hosted UI base URL
+    Value: !Sub "https://${FreeeeUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
+
+  CognitoAppClientId:
+    Description: Cognito app client ID
+    Value: !Ref FreeeeOauthAppClient

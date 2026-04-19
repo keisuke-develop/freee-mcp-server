@@ -7,9 +7,9 @@ ClaudeアプリからfreeeへのAI支出登録を実現する、AWS Lambda上の
 | 項目 | 内容 |
 |------|------|
 | 用途 | Claude → freee 支出登録 |
-| 構成 | API Gateway + Lambda |
+| 構成 | HTTP API + Lambda + Cognito + DynamoDB |
 | 認証情報 | AWS Secrets Manager |
-| 言語 | Python 3.12 |
+| 言語 | Python 3.13 |
 | デプロイ | AWS SAM |
 
 ## ディレクトリ構成
@@ -108,11 +108,18 @@ sam deploy --config-file infra/samconfig.toml
 
 デプロイ後、Outputsに表示される `ApiEndpoint` URLをメモする。
 
-### 5. Claude Custom Connector への登録
+### 5. Claude / Claude Code への登録
 
-1. Claude設定 → Custom Connectors → Remote MCP を追加
-2. エンドポイントURL: `https://<api-id>.execute-api.ap-northeast-1.amazonaws.com/prod/mcp`
-3. 認証: APIキー（API Gatewayで発行したキー）
+1. Claude設定 → Remote MCP を追加
+2. エンドポイントURL: `https://<api-id>.execute-api.ap-northeast-1.amazonaws.com/mcp`
+3. `OAuth Client ID` / `OAuth Client Secret` は空欄のまま保存
+4. 接続時に表示される Cognito ログイン画面でユーザー名とパスワードを入力
+
+補足:
+
+- Cognito はエンドユーザー認証だけに使う
+- MCP 用の `access_token` / `refresh_token` はこのサーバー自身が発行する
+- Claude 側に freee の `client_id` / `client_secret` を登録する必要はない
 
 ## テスト
 
@@ -153,6 +160,6 @@ pytest --cov=app --cov-report=term-missing
 
 - `.env` ファイルをGitにコミットしない
 - `client_secret` / `refresh_token` をLambda環境変数に書かない
-- APIキーをコードに書かない
+- Cognito のログイン情報をコードに書かない
 
 詳細は [docs/security.md](docs/security.md) を参照。

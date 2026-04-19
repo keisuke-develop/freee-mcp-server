@@ -75,24 +75,36 @@
 
 ---
 
-## 3. API Gatewayの公開範囲
+## 3. MCP認証方式
 
-### 認証方式（MVP）
+### 認証方式（現行）
 
 | 方式 | 採用 | 理由 |
 |------|------|------|
-| APIキー（x-api-key） | ✓ MVP採用 | 設定が簡単。個人利用に十分 |
-| Lambda オーソライザー | 将来対応 | JWT検証などに拡張可能 |
-| Cognito | 将来対応 | マルチユーザー時に検討 |
-| IAM認証 | ✗ | Claude Custom Connectorからは使いにくい |
+| Cognito Hosted UI | ✓ 採用 | Claude / Android から対話ログインしやすい |
+| MCPサーバー発行 Bearer Token | ✓ 採用 | resource server と token issuer を一致させ、MCP OAuth 仕様に寄せるため |
+| APIキー（x-api-key） | ✗ 廃止 | Android / Claude 側設定と相性が悪い |
+| IAM認証 | ✗ | Claude から扱いにくい |
 
-### API Gatewayの設定
+### 現行の認証責務
+
+- Cognito:
+  - ユーザー名 / パスワード認証
+  - Hosted UI 提供
+- MCP サーバー:
+  - `/.well-known/*` メタデータ提供
+  - dynamic client registration
+  - authorization code + PKCE
+  - MCP 専用 `access_token` / `refresh_token` の発行
+  - `/mcp` での Bearer token 検証
+
+### HTTP APIの設定
 
 ```
-- HTTPSのみ許可（HTTP非対応）
-- APIキーを必須化（Usage Planに紐付ける）
-- スロットリング設定（個人利用: バースト100, レート50）
-- CloudWatch Logsへのアクセスログ有効化
+- HTTPSのみ許可
+- `/health` と OAuth metadata / auth endpoint を公開
+- `/mcp` は Bearer token 必須
+- CloudWatch Logs を有効化
 ```
 
 ---
@@ -128,10 +140,11 @@ logger.info(f"access_token loaded: {bool(access_token)}")
 
 | リスク | 説明 | 対策 |
 |--------|------|------|
-| APIキー漏洩 | GitにAPIキーをコミット | `.gitignore` でSAM設定ファイルを管理。APIキーはCloudFormationパラメータで注入 |
+| Cognitoログイン情報漏洩 | ユーザー名 / パスワードを共有してしまう | 個人利用の単独運用に限定。必要に応じてパスワード変更 |
+| MCP refresh_token流出 | Claude 端末や中継で使うトークンが漏れる | 短命 access token + ローテーションされる refresh token を採用 |
 | 誤った支出登録 | 不正なamountや日付 | `freee_validate_expense_input` でバリデーション |
 | refresh_token流出 | Secrets Manager外に保存 | 必ずSecrets Managerのみに保存。ローカル開発では`.env`を`.gitignore` |
-| 他人からのMCP呼び出し | APIキーを知っている第三者 | APIキーを厳重に管理。定期ローテーション |
+| 他人からのMCP呼び出し | Cognitoユーザーを知っている第三者 | 単独利用に限定し、認証情報を共有しない |
 | CloudFormationへの平文埋め込み | Parametersに秘密情報を書く | Secrets ManagerのARNを参照するように設計 |
 | 大量リクエストによるコスト増 | Lambda大量起動 | API Gatewayスロットリング。WAF追加（将来） |
 | freee API誤操作（削除等） | バグで意図しないAPIを呼ぶ | Lambdaコードでは登録・参照のみ実装。削除APIは実装しない |
@@ -146,10 +159,17 @@ logger.info(f"access_token loaded: {bool(access_token)}")
 - 新しいrefresh_tokenを受け取ったら即座にSecrets Managerを更新する
 - 更新に失敗した場合はCloudWatch Logsにエラーを記録してアラート
 
-### APIキーのローテーション
+### Cognitoパスワードのローテーション
 
-- 手動ローテーション（3〜6ヶ月に1回推奨）
-- API Gatewayで新しいAPIキーを発行 → Claude Custom Connectorの設定を更新 → 旧キーを削除
+- 手動ローテーションを前提
+- Cognito の `admin-set-user-password` で変更
+- Claude / Android 側の再ログインで新パスワードへ切り替わる
+
+### MCPトークンのローテーション
+
+- access token は短命（1時間）
+- refresh token はサーバー発行（30日）
+- refresh 時は新しい token ペアを再発行
 
 ---
 

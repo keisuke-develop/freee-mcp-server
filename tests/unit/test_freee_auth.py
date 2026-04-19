@@ -56,11 +56,10 @@ class TestGetValidAccessToken:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = new_token_response
-        mock_response.raise_for_status = MagicMock()
 
         with patch("freee.auth.load_secret", return_value=secret), \
              patch("freee.auth.update_secret") as mock_update, \
-             patch("requests.post", return_value=mock_response):
+             patch("freee.auth.http_post", return_value=mock_response):
             auth = FreeeAuth()
             token = auth.get_valid_access_token()
 
@@ -78,11 +77,10 @@ class TestGetValidAccessToken:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = new_token_response
-        mock_response.raise_for_status = MagicMock()
 
         with patch("freee.auth.load_secret", return_value=secret), \
              patch("freee.auth.update_secret"), \
-             patch("requests.post", return_value=mock_response):
+             patch("freee.auth.http_post", return_value=mock_response):
             auth = FreeeAuth()
             token = auth.get_valid_access_token()
 
@@ -95,12 +93,9 @@ class TestGetValidAccessToken:
         mock_response.status_code = 401
         mock_response.raise_for_status.side_effect = Exception("401 Unauthorized")
 
-        import requests
         with patch("freee.auth.load_secret", return_value=secret), \
-             patch("requests.post") as mock_post:
-            mock_post.side_effect = requests.exceptions.HTTPError(
-                response=MagicMock(status_code=401)
-            )
+             patch("freee.auth.http_post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=401)
             auth = FreeeAuth()
 
             with pytest.raises(RuntimeError):

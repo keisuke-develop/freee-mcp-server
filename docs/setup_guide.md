@@ -14,7 +14,7 @@ Step 2. freee OAuth認証を実施してトークン取得（ブラウザ + タ�
 Step 3. AWSリソースを準備（ターミナル）
 Step 4. Secrets Managerに認証情報を登録（ターミナル）
 Step 5. SAMでビルド & デプロイ（ターミナル）
-Step 6. Claude Custom ConnectorにURLを登録（Claudeアプリ）
+Step 6. Claude / Claude Code にURLを登録（Claudeアプリ）
 Step 7. 動作確認
 ```
 
@@ -28,7 +28,7 @@ Step 7. 動作確認
 | AWSアカウント | aws.amazon.com |
 | AWS CLI（設定済み） | `aws sts get-caller-identity` |
 | AWS SAM CLI | `sam --version` |
-| Python 3.12 | `python3 --version` |
+| Python 3.13 | `python3 --version` |
 | curl または Postman | トークン取得用 |
 
 ---
@@ -37,8 +37,24 @@ Step 7. 動作確認
 
 ### 1-1. freee Developersにアクセス
 
-[https://developer.freee.co.jp/](https://developer.freee.co.jp/) にログインし、
-「アプリ管理」→「新規アプリを作成」をクリックする。
+[https://developer.freee.co.jp/](https://developer.freee.co.jp/) にログインした後、
+トップ上部メニューの `freeeアプリストア` から開発者向け画面に進む。
+
+その後の導線は以下。
+
+1. 開発者向けアプリ一覧画面で、アプリを作成する事業所を選択
+2. 右上の `アプリ管理` をクリック
+3. `新規追加` をクリック
+
+> **重要:** `APIリファレンス` 画面や、freee本体の「アカウント管理」画面では
+> `client_id` / `client_secret` は取得できない。
+> 必ず **freeeアプリストアの開発者ページ** から `アプリ管理` に進むこと。
+>
+> `アプリ管理` が見つからない場合は、
+> - 開発者向けアプリ一覧画面ではなく `developer.freee.co.jp` の記事ページを見ている
+> - 対象事業所をまだ選択していない
+> - 顧問先にアドバイザーとして所属しているだけで、従業員権限の事業所を選べていない
+> のいずれかであることが多い。
 
 ### 1-2. アプリ設定
 
@@ -52,6 +68,9 @@ Step 7. 動作確認
 > **補足:** `urn:ietf:wg:oauth:2.0:oob` はOOB（Out-Of-Band）方式。
 > 認可コードをブラウザに表示してコピーする方式なので、
 > コールバックサーバー不要で個人利用に最適。
+>
+> 保存後、アプリ詳細の `基本設定` タブで `Client ID` / `Client Secret` と
+> 認証用URLを確認できる。
 
 ### 1-3. client_id と client_secret を控える
 
@@ -70,13 +89,19 @@ client_secret = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 
 ### 2-1. 認可URLにアクセスする
 
-以下のURLをブラウザで開く（`YOUR_CLIENT_ID` を実際の値に置き換える）。
+もっとも確実なのは、`アプリ管理` → 対象アプリ → `基本設定` タブに表示される
+認証用URLをそのまま使う方法。
+
+手動で組み立てる場合は、以下のURLをブラウザで開く
+（`YOUR_CLIENT_ID` を実際の値に置き換える）。
 
 ```
-https://accounts.secure.freee.co.jp/public_api/authorize?client_id=YOUR_CLIENT_ID&redirect_uri=urn:ietf:wg:oauth:2.0:oob&response_type=code
+https://accounts.secure.freee.co.jp/public_api/authorize?response_type=code&client_id=YOUR_CLIENT_ID&redirect_uri=urn:ietf:wg:oauth:2.0:oob&prompt=select_company
 ```
 
-**freeeの認可画面で「許可する」をクリックすると、画面に認可コードが表示される。**
+`prompt=select_company` を付けると、freee標準の事業所選択画面が使われる。
+
+**freeeの認可画面で対象事業所を選び、「許可する」をクリックすると、画面に認可コードが表示される。**
 
 ```
 認可コード例: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -109,8 +134,9 @@ curl -X POST "https://accounts.secure.freee.co.jp/public_api/token" \
   "token_type": "bearer",
   "expires_in": 21600,
   "refresh_token": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  "scope": "read write",
-  "created_at": 1713520000
+  "scope": "read write default_read",
+  "created_at": 1713520000,
+  "company_id": 1234567
 }
 ```
 
@@ -121,7 +147,12 @@ curl -X POST "https://accounts.secure.freee.co.jp/public_api/token" \
 
 ### 2-3. company_id を取得する
 
-ターミナルで以下を実行して事業所IDを確認する。
+通常は **Step 2-2 のトークンレスポンスに含まれる `company_id` をそのまま使えばよい**。
+これは `prompt=select_company` 付きの認証用URL、またはアプリ管理画面に表示される
+デフォルトの認証用URLを使った場合の挙動。
+
+もしトークンレスポンスに `company_id` が含まれなかった場合のみ、
+補助手段として以下を実行して事業所IDを確認する。
 
 ```bash
 ACCESS_TOKEN="YOUR_ACCESS_TOKEN"
@@ -172,6 +203,17 @@ aws configure get region
 ## Step 4. Secrets Managerに認証情報を登録する
 
 ### 4-1. シークレットを新規作成する
+
+ローカルの `.env` に `FREEE_CLIENT_ID` / `FREEE_CLIENT_SECRET` /
+`FREEE_REFRESH_TOKEN` / `FREEE_ACCESS_TOKEN` / `FREEE_COMPANY_ID`
+が入っている場合は、以下のスクリプトで作成または更新できる。
+
+```bash
+cd freee
+./scripts/upsert_freee_secret.sh
+```
+
+手動で作成する場合は次のコマンドを使う。
 
 ```bash
 aws secretsmanager create-secret \
@@ -256,99 +298,89 @@ sam deploy \
 
 ### 5-4. デプロイ結果の確認
 
-デプロイ成功後に表示される `Outputs` から `ApiEndpoint` の値をメモする。
+デプロイ成功後に表示される `Outputs` から `ApiEndpoint` と `CognitoHostedUiUrl` をメモする。
 
 ```
 CloudFormation outputs from deployed stack
 -----------------------------------------
 Key    ApiEndpoint
-Value  https://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/prod/mcp
+Value  https://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/mcp
 ```
 
-### 5-5. APIキーを取得する
+### 5-5. Cognitoのログイン情報を準備する
 
 ```bash
-# スタックのAPIキー名を確認
-aws apigateway get-api-keys \
+# User Pool IDを確認
+aws cloudformation describe-stacks \
+  --stack-name freee-mcp-server \
   --region ap-northeast-1 \
-  --include-values \
-  --query "items[?contains(name, 'freee-mcp')].{name:name, value:value}" \
-  --output table
+  --query "Stacks[0].Outputs[?OutputKey=='CognitoUserPoolId'].OutputValue" \
+  --output text
 ```
 
-表示された `value` がAPIキー。Claude Custom Connectorへの登録に使用する。
+個人利用なら、管理者で Cognito ユーザーを1件だけ作成して使うのが最も簡単。
+
+```bash
+USER_POOL_ID="ap-northeast-1_xxxxxxxx"
+USERNAME="kuskus_ainan"
+PASSWORD="十分に強いパスワード"
+
+aws cognito-idp admin-create-user \
+  --user-pool-id "${USER_POOL_ID}" \
+  --username "${USERNAME}" \
+  --temporary-password "${PASSWORD}" \
+  --message-action SUPPRESS \
+  --region ap-northeast-1
+
+aws cognito-idp admin-set-user-password \
+  --user-pool-id "${USER_POOL_ID}" \
+  --username "${USERNAME}" \
+  --password "${PASSWORD}" \
+  --permanent \
+  --region ap-northeast-1
+```
+
+> Claude 側にはこのユーザー名・パスワードを保存しない。
+> 接続時に開く Cognito ログイン画面で入力する。
 
 ### 5-6. 動作確認（curlで直接テスト）
 
 ```bash
-API_URL="https://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/prod/mcp"
-API_KEY="YOUR_API_KEY"
+API_URL="https://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/mcp"
 
 # ヘルスチェック
-curl -X GET "${API_URL%/mcp}/health" -H "x-api-key: ${API_KEY}"
+curl -X GET "${API_URL%/mcp}/health"
 
-# MCPのinitialize
-curl -X POST "${API_URL}" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: ${API_KEY}" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": "1",
-    "method": "initialize",
-    "params": {
-      "protocolVersion": "2024-11-05",
-      "capabilities": {},
-      "clientInfo": {"name": "curl-test", "version": "1.0"}
-    }
-  }'
-
-# ツール一覧取得
-curl -X POST "${API_URL}" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: ${API_KEY}" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": "2",
-    "method": "tools/list",
-    "params": {}
-  }'
-
-# 勘定科目一覧取得（freee API連携テスト）
-curl -X POST "${API_URL}" \
-  -H "Content-Type: application/json" \
-  -H "x-api-key: ${API_KEY}" \
-  -d '{
-    "jsonrpc": "2.0",
-    "id": "3",
-    "method": "tools/call",
-    "params": {
-      "name": "freee_list_account_items",
-      "arguments": {"type": "expense"}
-    }
-  }'
+# OAuth metadata
+curl -X GET "${API_URL%/mcp}/.well-known/oauth-authorization-server"
+curl -X GET "${API_URL%/mcp}/.well-known/oauth-protected-resource"
 ```
+
+> `/mcp` 本体は Bearer token が必要。
+> 直接 curl で叩くより、Claude 側の Remote MCP 接続で OAuth ログインを完了させて確認する方が確実。
 
 ---
 
-## Step 6. Claude Custom ConnectorにURLを登録する
+## Step 6. Claude / Claude Code にURLを登録する
 
 ### 6-1. Claudeアプリの設定を開く
 
 1. Claudeアプリ（PC版）を開く
 2. 設定 → 「Integrations」または「MCP Servers」（UIはバージョンにより異なる）
-3. 「Add Remote MCP Server」または「Add Custom Connector」をクリック
+3. 「Add Remote MCP Server」をクリック
 
 ### 6-2. 接続情報を入力する
 
 | 項目 | 入力値 |
 |------|--------|
-| Server URL | `https://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/prod/mcp` |
-| 認証方式 | API Key |
-| APIキー | Step 5-5で取得した値 |
-| ヘッダー名 | `x-api-key` |
+| Server URL | `https://xxxxxxxxxx.execute-api.ap-northeast-1.amazonaws.com/mcp` |
+| OAuth Client ID | 空欄 |
+| OAuth Client Secret | 空欄 |
 
-> **要確認:** Claude Custom ConnectorのUI・設定項目名はClaudeのバージョンにより異なる。
-> 公式ドキュメントで最新の手順を確認すること。
+保存後に Cognito ログイン画面が開いたら、Step 5-5 で作成したユーザー名とパスワードを入力する。
+
+> この構成では、Cognito はユーザー認証のみ担当する。
+> Claude が最終的に使う `access_token` / `refresh_token` は MCP サーバー自身が発行する。
 
 ### 6-3. ツールの確認
 
@@ -401,23 +433,16 @@ aws secretsmanager put-secret-value \
   }'
 ```
 
-### APIキーのローテーション（3〜6ヶ月ごと推奨）
+### Cognitoパスワードの変更
 
 ```bash
-# 新しいAPIキーを作成
-aws apigateway create-api-key \
+# パスワードを更新
+aws cognito-idp admin-set-user-password \
+  --user-pool-id YOUR_USER_POOL_ID \
+  --username YOUR_USERNAME \
+  --password 'NEW_STRONG_PASSWORD' \
+  --permanent \
   --region ap-northeast-1 \
-  --enabled \
-  --name "freee-mcp-server-prod-new"
-
-# Usage Planに紐付け（APIキーIDを確認して実行）
-aws apigateway create-usage-plan-key \
-  --usage-plan-id YOUR_USAGE_PLAN_ID \
-  --key-id NEW_API_KEY_ID \
-  --key-type API_KEY
-
-# Claude Custom Connectorの設定を新しいキーに更新してから旧キーを削除
-aws apigateway delete-api-key --api-key OLD_API_KEY_ID
 ```
 
 ### ログの確認
@@ -439,5 +464,5 @@ aws logs tail /aws/lambda/freee-mcp-server-prod \
 | `AccessDeniedException` | Lambda IAMロールの権限不足 | `infra/iam_policy.json` を確認してIAMを修正 |
 | `401 Unauthorized` (freee API) | access_tokenが失効 | refresh_tokenが有効ならLambdaが自動更新。失効ならStep 2からやり直し |
 | `422 Unprocessable Entity` | freee APIのバリデーションエラー | CloudWatch Logsのエラー詳細を確認。`account_item_id` / `tax_code` が正しいか確認 |
-| MCP接続できない | APIキーが違う or エンドポイントURLが間違い | Step 5-5, 5-6を再確認 |
+| MCP接続できない | エンドポイントURL違い / Cognitoログイン失敗 / OAuthセッション不整合 | Step 5-5, 5-6を再確認し、Claude側の接続を作り直す |
 | タイムアウト | Lambda実行時間が28秒超 | freee API応答遅延の可能性。CloudWatch Logsで確認 |

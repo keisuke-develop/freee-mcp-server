@@ -17,9 +17,8 @@ import logging
 import os
 from typing import Any
 
-import requests
-
 from freee.auth import FreeeAuth
+from utils.http import http_get, http_post, HttpRequestError, HttpTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -157,15 +156,15 @@ class FreeeClient:
         headers = self._build_headers(access_token)
 
         try:
-            response = requests.get(
+            response = http_get(
                 f"{_FREEE_API_BASE}{path}",
                 params=params,
                 headers=headers,
                 timeout=_REQUEST_TIMEOUT,
             )
-        except requests.exceptions.Timeout:
+        except HttpTimeoutError:
             raise RuntimeError(f"freee API タイムアウト: GET {path}")
-        except requests.exceptions.RequestException as e:
+        except HttpRequestError as e:
             raise RuntimeError(f"freee API 接続エラー: {type(e).__name__}")
 
         return self._handle_response(response, path, "GET", params, retry)
@@ -189,22 +188,22 @@ class FreeeClient:
         headers = self._build_headers(access_token)
 
         try:
-            response = requests.post(
+            response = http_post(
                 f"{_FREEE_API_BASE}{path}",
-                json=json,
+                json_body=json,
                 headers=headers,
                 timeout=_REQUEST_TIMEOUT,
             )
-        except requests.exceptions.Timeout:
+        except HttpTimeoutError:
             raise RuntimeError(f"freee API タイムアウト: POST {path}")
-        except requests.exceptions.RequestException as e:
+        except HttpRequestError as e:
             raise RuntimeError(f"freee API 接続エラー: {type(e).__name__}")
 
         return self._handle_response(response, path, "POST", None, retry, json)
 
     def _handle_response(
         self,
-        response: requests.Response,
+        response: Any,
         path: str,
         method: str,
         params: Any,
@@ -251,7 +250,11 @@ class FreeeClient:
             raise RuntimeError(f"freee API レート制限。Retry-After: {retry_after}秒")
 
         # その他エラー
-        logger.error("freee API error: %s %s -> %d", method, path, status)
+        try:
+            error_body = response.json()
+        except Exception:
+            error_body = response.text
+        logger.error("freee API error: %s %s -> %d body=%s", method, path, status, error_body)
         raise RuntimeError(f"freee API エラー: {method} {path} -> HTTP {status}")
 
     @staticmethod

@@ -18,10 +18,22 @@ import os
 from typing import Any
 
 from mcp_router import route_request
+from oauth_server import (
+    begin_authorization,
+    build_authorization_metadata,
+    build_base_url,
+    build_resource_metadata,
+    build_unauthorized_headers,
+    exchange_token,
+    get_oauth_config,
+    handle_cognito_callback,
+    register_client,
+    validate_access_token,
+)
 
-# ロガー設定（ログレベルは環境変数で制御）
+# ロガー設定（Lambda では basicConfig は無効なため root logger を直接設定する）
 log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(level=log_level)
+logging.getLogger().setLevel(log_level)
 logger = logging.getLogger(__name__)
 
 
@@ -41,16 +53,63 @@ def lambda_handler(event: dict, context: Any) -> dict:
             "body": "<JSON文字列>"
         }
     """
-    logger.info("Request received: method=%s path=%s",
-                event.get("httpMethod"), event.get("path"))
+    method = _get_method(event)
+    path = _get_path(event)
+    logger.info("Request received: method=%s path=%s", method, path)
 
     # ヘルスチェックエンドポイント
-    if event.get("path") == "/health" and event.get("httpMethod") == "GET":
+    if path == "/health" and method == "GET":
         return _build_response(200, {"status": "ok"})
 
-    # MCPエンドポイント以外は404
-    if event.get("path") != "/mcp" or event.get("httpMethod") != "POST":
+    known_paths = {
+        "/mcp",
+        "/register",
+        "/authorize",
+        "/oauth/callback",
+        "/token",
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-authorization-server",
+    }
+    if path not in known_paths:
         return _build_response(404, {"error": "Not Found"})
+
+    base_url = build_base_url(event)
+    oauth_config = get_oauth_config()
+
+    if path == "/.well-known/oauth-protected-resource" and method == "GET":
+        return _build_response(200, build_resource_metadata(base_url, oauth_config))
+
+    if path == "/.well-known/oauth-authorization-server" and method == "GET":
+        return _build_response(200, build_authorization_metadata(base_url, oauth_config))
+
+    if path == "/register" and method == "POST":
+        body = json.loads(event.get("body", "") or "{}")
+        status_code, response_body = register_client(body)
+        return _build_response(status_code, response_body)
+
+    if path == "/authorize" and method == "GET":
+        status_code, response_body = begin_authorization(event, base_url, oauth_config)
+        return _build_oauth_response(status_code, response_body)
+
+    if path == "/oauth/callback" and method == "GET":
+        status_code, response_body = handle_cognito_callback(event, base_url, oauth_config)
+        return _build_oauth_response(status_code, response_body)
+
+    if path == "/token" and method == "POST":
+        status_code, response_body = exchange_token(event, base_url, oauth_config)
+        return _build_response(status_code, response_body)
+
+    # MCPエンドポイント以外は404
+    if path != "/mcp" or method != "POST":
+        return _build_response(404, {"error": "Not Found"})
+
+    claims = validate_access_token(_get_header(event, "authorization"), oauth_config)
+    if claims is None:
+        return {
+            "statusCode": 401,
+            "headers": build_unauthorized_headers(base_url),
+            "body": json.dumps({"error": "unauthorized"}),
+        }
 
     # リクエストボディのパース
     body_str = event.get("body", "") or ""
@@ -98,6 +157,21 @@ def _build_response(status_code: int, body: dict) -> dict:
     }
 
 
+def _build_oauth_response(status_code: int, body: dict) -> dict:
+    """OAuth用リダイレクトまたはJSONレスポンスを構築する。"""
+    headers = {"Access-Control-Allow-Origin": "*"}
+    if status_code in (301, 302) and body.get("location"):
+        headers["Location"] = body["location"]
+        return {"statusCode": status_code, "headers": headers, "body": ""}
+
+    headers["Content-Type"] = "application/json"
+    return {
+        "statusCode": status_code,
+        "headers": headers,
+        "body": json.dumps(body, ensure_ascii=False),
+    }
+
+
 def _json_rpc_error(request_id: Any, code: int, message: str) -> dict:
     """JSON-RPC 2.0 エラーレスポンスを構築する。"""
     return {
@@ -108,3 +182,25 @@ def _json_rpc_error(request_id: Any, code: int, message: str) -> dict:
             "message": message,
         }
     }
+
+
+def _get_method(event: dict) -> str:
+    """API Gateway v1/v2 の両方からHTTPメソッドを取得する。"""
+    return (
+        event.get("httpMethod")
+        or event.get("requestContext", {}).get("http", {}).get("method", "")
+    )
+
+
+def _get_path(event: dict) -> str:
+    """API Gateway v1/v2 の両方からパスを取得する。"""
+    return event.get("path") or event.get("rawPath", "")
+
+
+def _get_header(event: dict, name: str) -> str | None:
+    """ヘッダー名を大文字小文字無視で取得する。"""
+    headers = event.get("headers") or {}
+    for key, value in headers.items():
+        if key.lower() == name.lower():
+            return value
+    return None

@@ -24,7 +24,11 @@ def _make_api_gw_event(body: dict, path: str = "/mcp", method: str = "POST") -> 
     return {
         "httpMethod": method,
         "path": path,
-        "headers": {"Content-Type": "application/json"},
+        "headers": {
+            "Content-Type": "application/json",
+            "Host": "example.com",
+            "Authorization": "Bearer test-token",
+        },
         "body": json.dumps(body),
         "queryStringParameters": None,
         "requestContext": {},
@@ -71,7 +75,9 @@ class TestMcpEndpoint:
             }
         })
 
-        response = handler.lambda_handler(event, None)
+        with patch("lambda_handler.get_oauth_config"), \
+             patch("lambda_handler.validate_access_token", return_value={"sub": "user-1"}):
+            response = handler.lambda_handler(event, None)
 
         assert response["statusCode"] == 200
         body = json.loads(response["body"])
@@ -85,7 +91,9 @@ class TestMcpEndpoint:
             "params": {}
         })
 
-        response = handler.lambda_handler(event, None)
+        with patch("lambda_handler.get_oauth_config"), \
+             patch("lambda_handler.validate_access_token", return_value={"sub": "user-1"}):
+            response = handler.lambda_handler(event, None)
 
         assert response["statusCode"] == 200
         body = json.loads(response["body"])
@@ -114,10 +122,12 @@ class TestMcpEndpoint:
             }
         })
 
-        with patch("freee.auth.load_secret", return_value=mock_secret), \
+        with patch("lambda_handler.get_oauth_config"), \
+             patch("lambda_handler.validate_access_token", return_value={"sub": "user-1"}), \
+             patch("freee.auth.load_secret", return_value=mock_secret), \
              patch("freee.auth.update_secret"), \
-             patch("requests.post") as mock_post, \
-             patch("requests.get"):
+             patch("freee.client.http_post") as mock_post, \
+             patch("freee.client.http_get"):
 
             mock_response = MagicMock()
             mock_response.status_code = 201
@@ -143,7 +153,9 @@ class TestErrorHandling:
             "path": "/mcp",
             "body": "invalid json {{{",
         }
-        response = handler.lambda_handler(event, None)
+        with patch("lambda_handler.get_oauth_config"), \
+             patch("lambda_handler.validate_access_token", return_value={"sub": "user-1"}):
+            response = handler.lambda_handler(event, None)
         assert response["statusCode"] == 400
 
     def test_空のボディは400を返す(self):
@@ -152,7 +164,9 @@ class TestErrorHandling:
             "path": "/mcp",
             "body": "",
         }
-        response = handler.lambda_handler(event, None)
+        with patch("lambda_handler.get_oauth_config"), \
+             patch("lambda_handler.validate_access_token", return_value={"sub": "user-1"}):
+            response = handler.lambda_handler(event, None)
         assert response["statusCode"] == 400
 
     def test_jsonrpcバージョン不正は400を返す(self):
@@ -162,7 +176,9 @@ class TestErrorHandling:
             "method": "initialize",
             "params": {}
         })
-        response = handler.lambda_handler(event, None)
+        with patch("lambda_handler.get_oauth_config"), \
+             patch("lambda_handler.validate_access_token", return_value={"sub": "user-1"}):
+            response = handler.lambda_handler(event, None)
         assert response["statusCode"] == 400
 
     def test_存在しないパスは404を返す(self):
@@ -190,10 +206,52 @@ class TestErrorHandling:
             }
         })
 
-        response = handler.lambda_handler(event, None)
+        with patch("lambda_handler.get_oauth_config"), \
+             patch("lambda_handler.validate_access_token", return_value={"sub": "user-1"}):
+            response = handler.lambda_handler(event, None)
         # バリデーションエラーはHTTP 200でMCPレスポンスとして返る
         assert response["statusCode"] == 200
         body = json.loads(response["body"])
         # freee_validate_expense_input はエラーでもresultとしてcontent配列を返す
         assert "result" in body
         assert "バリデーションエラー" in body["result"]["content"][0]["text"]
+
+    def test_認証なしのMCPは401を返す(self):
+        event = _make_api_gw_event({
+            "jsonrpc": "2.0",
+            "id": "6",
+            "method": "tools/list",
+            "params": {}
+        })
+
+        with patch("lambda_handler.get_oauth_config"), \
+             patch("lambda_handler.validate_access_token", return_value=None):
+            response = handler.lambda_handler(event, None)
+
+        assert response["statusCode"] == 401
+        assert "WWW-Authenticate" in response["headers"]
+
+    def test_認可メタデータは200を返す(self):
+        event = {
+            "httpMethod": "GET",
+            "path": "/.well-known/oauth-authorization-server",
+            "headers": {"Host": "example.com"},
+            "body": None,
+            "queryStringParameters": None,
+            "requestContext": {},
+        }
+
+        with patch(
+            "lambda_handler.get_oauth_config",
+            return_value=MagicMock(
+                cognito_user_pool_id="ap-northeast-1_test",
+                cognito_app_client_name="freee-mcp-oauth-prod",
+                cognito_domain_url="https://example.auth.ap-northeast-1.amazoncognito.com",
+                cognito_issuer_url="https://cognito-idp.ap-northeast-1.amazonaws.com/pool",
+            ),
+        ):
+            response = handler.lambda_handler(event, None)
+
+        assert response["statusCode"] == 200
+        body = json.loads(response["body"])
+        assert body["authorization_endpoint"] == "https://example.com/authorize"

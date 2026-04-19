@@ -1,0 +1,25 @@
+{
+  "_comment": "Lambda実行ロールに付与するIAMポリシー（最小権限）。<region>/<account-id>/<secret-name>は実際の値に置き換えること。",
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadWriteFreeeSecret",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue"
+      ],
+      "Resource": "arn:aws:secretsmanager:<region>:<account-id>:secret:freee/mcp-server-*"
+    },
+    {
+      "Sid": "CloudWatchLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:<region>:<account-id>:log-group:/aws/lambda/freee-mcp-server-*:*"
+    }
+  ]
+}

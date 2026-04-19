@@ -1,0 +1,23 @@
+# SAM CLI 設定ファイル
+# 使用方法: sam deploy --config-env prod
+
+version = 0.1
+
+[default.global.parameters]
+stack_name = "freee-mcp-server"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM CAPABILITY_NAMED_IAM"
+confirm_changeset = true
+resolve_s3 = true
+s3_prefix = "freee-mcp-server"
+region = "ap-northeast-1"
+# シークレット情報はここに書かない
+# SecretName はデフォルト値 "freee/mcp-server" を使用
+
+[prod.deploy.parameters]
+parameter_overrides = "StageName=prod LogLevel=INFO"

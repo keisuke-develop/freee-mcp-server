@@ -1,0 +1,173 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: freee Remote MCP Server - API Gateway + Lambda
+
+# ============================================================
+# パラメータ
+# ============================================================
+Parameters:
+  StageName:
+    Type: String
+    Default: prod
+    Description: API Gatewayのステージ名
+
+  SecretName:
+    Type: String
+    Default: freee/mcp-server
+    Description: Secrets Managerのシークレット名（freee認証情報）
+
+  LogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+    Description: Lambdaのログレベル
+
+# ============================================================
+# グローバル設定
+# ============================================================
+Globals:
+  Function:
+    Runtime: python3.12
+    Timeout: 28          # API Gatewayの29秒制限より1秒短く設定
+    MemorySize: 256
+    Environment:
+      Variables:
+        SECRET_NAME: !Ref SecretName
+        LOG_LEVEL: !Ref LogLevel
+        FREEE_API_BASE_URL: "https://api.freee.co.jp"
+        POWERTOOLS_SERVICE_NAME: freee-mcp-server
+    # 本番環境では以下を有効化
+    # Tracing: Active
+
+# ============================================================
+# リソース定義
+# ============================================================
+Resources:
+
+  # ----------------------------------------------------------
+  # Lambda 実行ロール
+  # ----------------------------------------------------------
+  FreeeeMcpLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "freee-mcp-lambda-role-${StageName}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: FreeeSecretAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Secrets Manager: freee認証情報の読み書きのみ許可
+              - Sid: ReadWriteFreeeSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:PutSecretValue
+                Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretName}-*"
+              # CloudWatch Logs: このLambdaのロググループのみ許可
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/freee-mcp-server-*:*"
+
+  # ----------------------------------------------------------
+  # Lambda Function
+  # ----------------------------------------------------------
+  FreeeeMcpFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "freee-mcp-server-${StageName}"
+      CodeUri: ../app/
+      Handler: lambda_handler.lambda_handler
+      Role: !GetAtt FreeeeMcpLambdaRole.Arn
+      Description: freee Remote MCP Server
+      Events:
+        # MCP エンドポイント（全JSON-RPCリクエストを受け付け）
+        McpEndpoint:
+          Type: Api
+          Properties:
+            RestApiId: !Ref FreeeeMcpApi
+            Path: /mcp
+            Method: POST
+        # ヘルスチェック（オプション）
+        HealthCheck:
+          Type: Api
+          Properties:
+            RestApiId: !Ref FreeeeMcpApi
+            Path: /health
+            Method: GET
+
+  # ----------------------------------------------------------
+  # API Gateway
+  # ----------------------------------------------------------
+  FreeeeMcpApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "freee-mcp-api-${StageName}"
+      StageName: !Ref StageName
+      Description: freee Remote MCP Server API
+      # APIキー認証を有効化
+      Auth:
+        ApiKeyRequired: true
+        UsagePlan:
+          CreateUsagePlan: PER_API
+          Description: freee MCP Server usage plan
+          Throttle:
+            BurstLimit: 100   # 個人利用のため低めに設定
+            RateLimit: 50
+          Quota:
+            Limit: 10000      # 月10,000リクエスト上限（個人利用想定）
+            Period: MONTH
+      # アクセスログ設定
+      AccessLogSetting:
+        DestinationArn: !GetAtt FreeeeMcpApiLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","ip":"$context.identity.sourceIp","requestTime":"$context.requestTime","httpMethod":"$context.httpMethod","routeKey":"$context.routeKey","status":"$context.status","responseLength":"$context.responseLength"}'
+      MethodSettings:
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          # 詳細ログは無効（コスト削減）
+          LoggingLevel: ERROR
+          # メトリクスは有効
+          MetricsEnabled: true
+
+  # ----------------------------------------------------------
+  # CloudWatch Log Groups
+  # ----------------------------------------------------------
+  FreeeeMcpFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/freee-mcp-server-${StageName}"
+      RetentionInDays: 30   # 個人利用のため30日で十分
+
+  FreeeeMcpApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/freee-mcp-api-${StageName}"
+      RetentionInDays: 30
+
+# ============================================================
+# 出力
+# ============================================================
+Outputs:
+  ApiEndpoint:
+    Description: Remote MCP Server のエンドポイントURL
+    Value: !Sub "https://${FreeeeMcpApi}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/mcp"
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiEndpoint"
+
+  FunctionArn:
+    Description: Lambda FunctionのARN
+    Value: !GetAtt FreeeeMcpFunction.Arn
+
+  ApiId:
+    Description: API Gateway の ID
+    Value: !Ref FreeeeMcpApi

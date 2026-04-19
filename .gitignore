@@ -1,0 +1,36 @@
+# 秘密情報（絶対にコミットしない）
+.env
+.env.*
+secrets.json
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# テスト・カバレッジ
+.pytest_cache/
+.coverage
+coverage_html/
+htmlcov/
+.tox/
+
+# AWS SAM ビルド成果物
+.aws-sam/
+packaged.yaml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store

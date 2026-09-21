@@ -1,6 +1,7 @@
 # 秘密情報（絶対にコミットしない）
 .env
 .env.*
+!.env.example
 .mcp.json
 secrets.json
 *.pem
@@ -22,6 +23,10 @@ build/
 coverage_html/
 htmlcov/
 .tox/
+
+.venv/
+.venv-*/
+venv/
 
 # AWS SAM ビルド成果物
 .aws-sam/

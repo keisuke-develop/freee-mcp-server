@@ -322,7 +322,7 @@ aws cloudformation describe-stacks \
 
 ```bash
 USER_POOL_ID="ap-northeast-1_xxxxxxxx"
-USERNAME="kuskus_ainan"
+USERNAME="demo-user"
 PASSWORD="十分に強いパスワード"
 
 aws cognito-idp admin-create-user \

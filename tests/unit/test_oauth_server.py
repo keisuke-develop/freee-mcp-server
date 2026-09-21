@@ -19,7 +19,7 @@ def _config() -> oauth_server.OAuthConfig:
         table_name="dummy",
         cognito_user_pool_id="ap-northeast-1_test",
         cognito_app_client_name="freee-mcp-oauth-prod",
-        cognito_domain_url="https://freee.auth.ap-northeast-1.amazoncognito.com",
+        cognito_domain_url="https://example.auth.ap-northeast-1.amazoncognito.com",
         cognito_issuer_url="https://cognito-idp.ap-northeast-1.amazonaws.com/ap-northeast-1_test",
     )
 
@@ -67,7 +67,7 @@ class TestTokenIssuance:
         response = oauth_server.issue_tokens(
             client_id="mcp_client",
             subject="user-sub",
-            username="kuskus_ainan",
+            username="demo-user",
             scope="openid profile",
             resource="https://example.com/mcp",
         )
@@ -87,7 +87,7 @@ class TestTokenIssuance:
                 "redirect_uri": "https://claude.ai/api/mcp/auth_callback",
                 "code_challenge": "challenge",
                 "subject": "user-sub",
-                "username": "kuskus_ainan",
+                "username": "demo-user",
                 "scope": "openid email profile",
                 "resource": "https://example.com/mcp",
             },
@@ -128,7 +128,7 @@ class TestTokenIssuance:
             lambda pk: {
                 "client_id": "mcp_client",
                 "subject": "user-sub",
-                "username": "kuskus_ainan",
+                "username": "demo-user",
                 "scope": "openid email profile",
                 "resource": "https://example.com/mcp",
             },
@@ -169,7 +169,7 @@ class TestValidateAccessToken:
             lambda pk: {
                 "client_id": {"S": "mcp_client"},
                 "subject": {"S": "user-sub"},
-                "username": {"S": "kuskus_ainan"},
+                "username": {"S": "demo-user"},
                 "scope": {"S": "openid"},
                 "resource": {"S": "https://example.com/mcp"},
                 "expires_at": {"N": str(int(oauth_server.time.time()) + 3600)},
@@ -178,7 +178,7 @@ class TestValidateAccessToken:
 
         claims = oauth_server.validate_access_token("Bearer atk_token", _config())
         assert claims["sub"] == "user-sub"
-        assert claims["username"] == "kuskus_ainan"
+        assert claims["username"] == "demo-user"
 
     def test_異常系_BearerなしはNone(self):
         assert oauth_server.validate_access_token(None, _config()) is None
@@ -191,7 +191,7 @@ class TestValidateAccessToken:
             lambda pk: {
                 "client_id": {"S": "mcp_client"},
                 "subject": {"S": "user-sub"},
-                "username": {"S": "kuskus_ainan"},
+                "username": {"S": "demo-user"},
                 "expires_at": {"N": str(int(oauth_server.time.time()) - 1)},
             },
         )
@@ -237,13 +237,13 @@ class TestAuthorizationCallback:
         monkeypatch.setattr(
             oauth_server,
             "extract_principal",
-            lambda token_data: {"subject": "user-sub", "username": "kuskus_ainan"},
+            lambda token_data: {"subject": "user-sub", "username": "demo-user"},
         )
 
         response = MagicMock()
         response.status_code = 200
         response.json.return_value = {"id_token": "token"}
-        monkeypatch.setattr(oauth_server.requests, "post", lambda *args, **kwargs: response)
+        monkeypatch.setattr(oauth_server, "http_post", lambda *args, **kwargs: response)
 
         status_code, body = oauth_server.handle_cognito_callback(
             {
@@ -263,9 +263,9 @@ class TestAuthorizationCallback:
         assert stored_items[0]["subject"]["S"] == "user-sub"
 
     def test_Cognito応答からユーザー識別子を抽出できる(self):
-        token = jwt_like_token({"sub": "user-sub", "cognito:username": "kuskus_ainan"})
+        token = jwt_like_token({"sub": "user-sub", "cognito:username": "demo-user"})
         principal = oauth_server.extract_principal({"id_token": token})
-        assert principal == {"subject": "user-sub", "username": "kuskus_ainan"}
+        assert principal == {"subject": "user-sub", "username": "demo-user"}
 
 
 def jwt_like_token(payload: dict[str, str]) -> str:
